@@ -1,1 +1,17 @@
 Proposal.md
+
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Env / secrets
+.envrc
+
