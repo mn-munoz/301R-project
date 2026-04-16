@@ -14,7 +14,7 @@ When it has gathered all required fields, it emits a special JSON block
 that the backend detects and uses to trigger the planning pipeline.
 """
 
-from agents import Agent
+from run_agent import Agent
 from config import INTAKE_MODEL
 
 INTAKE_SYSTEM_PROMPT = """
@@ -71,8 +71,10 @@ Do not output the JSON until ALL fields are confirmed.
 
 def create_intake_agent() -> Agent:
     return Agent(
-        name="RoadWise Intake Agent",
-        instructions=INTAKE_SYSTEM_PROMPT,
+        name="intake_agent",
+        description="Friendly trip concierge that collects trip details from the user one question at a time.",
         model=INTAKE_MODEL,
-        # No tools needed — this agent only converses
+        prompt=INTAKE_SYSTEM_PROMPT,
+        tools=[],   # No tools — this agent only converses
+        kwargs={},
     )

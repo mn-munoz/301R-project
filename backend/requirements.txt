@@ -1,6 +1,6 @@
 fastapi
 uvicorn[standard]
-openai-agents
+openai
 python-dotenv
 httpx
 pydantic

@@ -10,10 +10,8 @@ No hallucination possible here: the math is deterministic.
 """
 
 import math
-from agents import function_tool
 
 
-@function_tool
 def calculate_gas_stops(
     total_miles: float,
     mpg: float,

@@ -12,12 +12,20 @@ CLASS CONCEPTS: Tool Calling (code-as-tool) + Hallucination Control
 """
 
 import httpx
-from agents import function_tool
 from config import GOOGLE_API_KEY
 
-ROUTES_BASE  = "https://routes.googleapis.com/directions/v2:computeRoutes"
-PLACES_BASE  = "https://places.googleapis.com/v1/places:searchNearby"
-GEOCODE_BASE = "https://maps.googleapis.com/maps/api/geocode/json"
+ROUTES_BASE      = "https://routes.googleapis.com/directions/v2:computeRoutes"
+PLACES_TEXT_BASE = "https://places.googleapis.com/v1/places:searchText"
+GEOCODE_BASE     = "https://maps.googleapis.com/maps/api/geocode/json"
+
+# Price level mapping from the Places API enum to human-readable symbols
+PRICE_SYMBOLS = {
+    "PRICE_LEVEL_FREE":             "Free",
+    "PRICE_LEVEL_INEXPENSIVE":      "$",
+    "PRICE_LEVEL_MODERATE":         "$$",
+    "PRICE_LEVEL_EXPENSIVE":        "$$$",
+    "PRICE_LEVEL_VERY_EXPENSIVE":   "$$$$",
+}
 
 
 # ── Internal helper ──────────────────────────────────────────────────────────
@@ -55,7 +63,6 @@ async def _reverse_geocode(client: httpx.AsyncClient, lat: float, lng: float) ->
 
 # ── Public tools ─────────────────────────────────────────────────────────────
 
-@function_tool
 async def get_route(origin: str, destination: str) -> dict:
     """
     Get driving route details between two locations using the Google Maps Routes API.
@@ -109,7 +116,6 @@ async def get_route(origin: str, destination: str) -> dict:
             return {"error": str(e)}
 
 
-@function_tool
 async def get_midpoint_cities(origin: str, destination: str, num_stops: int = 1) -> dict:
     """
     Find good overnight stop cities evenly spaced along a long driving route.
@@ -177,70 +183,84 @@ async def get_midpoint_cities(origin: str, destination: str, num_stops: int = 1)
             return {"error": str(e)}
 
 
-@function_tool
-async def search_places(query: str, location: str, place_type: str = "lodging") -> dict:
+async def search_places(query: str, location: str) -> dict:
     """
-    Search for nearby places (hotels, restaurants, attractions) using the Places API (New).
+    Search for places (hotels, restaurants, attractions) near a city using
+    the Google Maps Places API Text Search.
 
     Args:
-        query: Search term (e.g. "budget hotel", "hiking trail", "tacos")
-        location: City or address to search near (e.g. "Flagstaff, AZ")
-        place_type: Google place type — one of: lodging, restaurant,
-                    tourist_attraction, campground, gas_station
+        query: What to search for, including location context.
+               Examples:
+                 "budget hotel in Flagstaff AZ"
+                 "best hiking trails near Sedona AZ"
+                 "highly rated Mexican restaurant in Albuquerque NM"
+                 "things to do in Santa Fe NM"
+        location: City used to bias results geographically (e.g. "Flagstaff, AZ").
 
     Returns:
-        Dict with a list of up to 5 matching places (name, rating, address).
+        Dict with up to 5 matching places, each with name, rating, address,
+        price_level, and a direct Google Maps URL.
     """
     async with httpx.AsyncClient() as client:
         try:
-            # Step 1 — geocode the city to get lat/lng
+            # Geocode the city for location bias
             loc = await _geocode(client, location)
-            if not loc:
-                return {"error": f"Could not geocode location: {location}"}
 
-            # Step 2 — Places API (New) nearby search
             headers = {
                 "Content-Type": "application/json",
                 "X-Goog-Api-Key": GOOGLE_API_KEY,
                 "X-Goog-FieldMask": (
-                    "places.displayName,places.rating,"
-                    "places.formattedAddress,places.priceLevel,"
-                    "places.regularOpeningHours"
+                    "places.displayName,"
+                    "places.rating,"
+                    "places.formattedAddress,"
+                    "places.priceLevel,"
+                    "places.googleMapsUri,"
+                    "places.editorialSummary"
                 ),
             }
-            body = {
-                "includedTypes":     [place_type],
-                "maxResultCount":    5,
-                "rankPreference":    "RATING",
-                "locationRestriction": {
-                    "circle": {
-                        "center": {"latitude": loc["lat"], "longitude": loc["lng"]},
-                        "radius": 10000,   # 10 km
-                    }
-                },
-                "textQuery": query,   # optional keyword filter
+
+            body: dict = {
+                "textQuery":      query,
+                "maxResultCount": 5,
+                "languageCode":   "en",
             }
 
-            resp = await client.post(PLACES_BASE, json=body, headers=headers, timeout=15)
+            # If we have coordinates, add a location bias so results are near the city
+            if loc:
+                body["locationBias"] = {
+                    "circle": {
+                        "center": {"latitude": loc["lat"], "longitude": loc["lng"]},
+                        "radius": 30000,   # 30 km bias radius
+                    }
+                }
+
+            resp = await client.post(
+                PLACES_TEXT_BASE, json=body, headers=headers, timeout=15
+            )
             resp.raise_for_status()
             data = resp.json()
 
+            if "error" in data:
+                return {"error": data["error"].get("message", "Places API error"), "results": []}
+
             results = []
             for place in data.get("places", []):
+                price_raw = place.get("priceLevel", "")
                 results.append({
-                    "name":       place.get("displayName", {}).get("text", "Unknown"),
-                    "rating":     place.get("rating"),
-                    "address":    place.get("formattedAddress"),
-                    "price_level": place.get("priceLevel"),
+                    "name":        place.get("displayName", {}).get("text", "Unknown"),
+                    "rating":      place.get("rating"),
+                    "address":     place.get("formattedAddress"),
+                    "price_level": PRICE_SYMBOLS.get(price_raw),
+                    "maps_url":    place.get("googleMapsUri"),
+                    "description": place.get("editorialSummary", {}).get("text"),
                 })
 
             return {
                 "location": location,
                 "query":    query,
-                "type":     place_type,
                 "results":  results,
                 "count":    len(results),
             }
 
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": str(e), "results": []}

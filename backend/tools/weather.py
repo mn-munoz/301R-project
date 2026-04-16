@@ -6,11 +6,9 @@ Used by the Experience Agent to warn about weather along the route.
 """
 
 import httpx
-from agents import function_tool
 from config import OPENWEATHER_API_KEY
 
 
-@function_tool
 async def get_weather_forecast(city: str) -> dict:
     """
     Get a 5-day weather forecast for a city.

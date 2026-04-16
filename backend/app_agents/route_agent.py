@@ -16,10 +16,8 @@ This agent receives the structured TripBrief and:
   4. Returns a structured route object for the Orchestrator
 """
 
-from agents import Agent
+from run_agent import Agent
 from config import ROUTE_MODEL
-from tools.gas_calculator import calculate_gas_stops
-from tools.google_maps_tools import get_route, get_midpoint_cities
 
 ROUTE_SYSTEM_PROMPT = """
 You are the Route & Logistics specialist for RoadWise, a road trip planning app.
@@ -69,8 +67,14 @@ If a tool returns an error, include the error text in stops_description and use 
 
 def create_route_agent() -> Agent:
     return Agent(
-        name="RoadWise Route Agent",
-        instructions=ROUTE_SYSTEM_PROMPT,
+        name="route_agent",
+        description=(
+            "Plans the full driving route for a road trip. "
+            "Pass the TripBrief JSON as input. "
+            "Returns a JSON object with daily_legs, total_miles, total_drive_hours, and gas_summary."
+        ),
         model=ROUTE_MODEL,
-        tools=[get_route, get_midpoint_cities, calculate_gas_stops],
+        prompt=ROUTE_SYSTEM_PROMPT,
+        tools=["get_route", "get_midpoint_cities", "calculate_gas_stops"],
+        kwargs={},
     )

@@ -19,7 +19,7 @@ class TripBrief(BaseModel):
     budget: str                     # e.g. "budget", "moderate", "luxury"
     interests: list[str]            # e.g. ["hiking", "local food", "history"]
     vehicle: VehicleInfo
-    gas_price_estimate: float = 3.75  # dollars per gallon, user can override
+    gas_price_estimate: float = 3.75
 
 
 class GasStopResult(BaseModel):
@@ -31,15 +31,25 @@ class GasStopResult(BaseModel):
     stops_description: str = ""
 
 
+class Place(BaseModel):
+    """A real, named place returned by the Google Maps Places API."""
+    name: str
+    rating: Optional[float] = None      # 1.0 – 5.0
+    address: Optional[str] = None       # formatted street address
+    price_level: Optional[str] = None   # "$" | "$$" | "$$$" | "$$$$"
+    maps_url: Optional[str] = None      # deep-link to Google Maps
+
+
 class DayPlan(BaseModel):
     day: int
     location: str
     drive_miles: float = 0.0
     drive_hours: float = 0.0
-    lodging: Optional[str] = None
-    activities: list[str] = Field(default_factory=list)
-    restaurants: list[str] = Field(default_factory=list)
-    gas_stop: Optional[str] = None  # city/town name if a gas stop is needed
+    lodging: Optional[Place] = None
+    activities: list[Place] = Field(default_factory=list)
+    restaurants: list[Place] = Field(default_factory=list)
+    gas_stop: Optional[str] = None
+    weather_note: Optional[str] = None
 
 
 class TripPlan(BaseModel):
@@ -55,7 +65,7 @@ class TripPlan(BaseModel):
 
 
 class ChatMessage(BaseModel):
-    role: str   # "user" or "assistant"
+    role: str
     content: str
 
 
@@ -67,5 +77,5 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     session_id: str
     reply: str
-    trip_plan: Optional[TripPlan] = None   # populated once planning is complete
-    phase: str = "intake"                  # "intake" | "planning" | "done"
+    trip_plan: Optional[TripPlan] = None
+    phase: str = "intake"

@@ -1,18 +1,72 @@
 import { useState } from "react";
 
+// ── Star rating renderer ─────────────────────────────────────────────────────
+function Stars({ rating }) {
+  if (!rating) return null;
+  const full  = Math.floor(rating);
+  const half  = rating % 1 >= 0.5;
+  const empty = 5 - full - (half ? 1 : 0);
+  return (
+    <span style={{ color: "#f59e0b", fontSize: "0.75rem", letterSpacing: "0.5px" }}>
+      {"★".repeat(full)}
+      {half ? "½" : ""}
+      {"☆".repeat(empty)}
+      <span style={{ color: "var(--text-muted)", marginLeft: 4, fontSize: "0.72rem" }}>
+        {rating.toFixed(1)}
+      </span>
+    </span>
+  );
+}
+
+// ── Single place card ────────────────────────────────────────────────────────
+function PlaceCard({ place, accent = "var(--accent)" }) {
+  if (!place || !place.name) return null;
+
+  const isFallback = place.name.toLowerCase().includes("search locally");
+
+  return (
+    <div className="place-card" style={{ borderLeftColor: accent }}>
+      <div className="place-card-top">
+        <span className="place-name">{place.name}</span>
+        {place.price_level && (
+          <span className="place-price" style={{ color: accent }}>{place.price_level}</span>
+        )}
+      </div>
+
+      {!isFallback && (
+        <>
+          {place.rating && <Stars rating={place.rating} />}
+          {place.address && (
+            <div className="place-address">📍 {place.address}</div>
+          )}
+          {place.maps_url && (
+            <a
+              href={place.maps_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="place-link"
+            >
+              View on Google Maps →
+            </a>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Collapsible day card ─────────────────────────────────────────────────────
 function DayCard({ day }) {
   const [open, setOpen] = useState(true);
-
-  const hasMeta = day.drive_miles > 0 || day.drive_hours > 0;
+  const hasDrive = day.drive_miles > 0 || day.drive_hours > 0;
 
   return (
     <div className="day-card">
-      {/* Clickable header */}
       <div className="day-header" onClick={() => setOpen(o => !o)}>
         <div className="day-number">{day.day}</div>
         <div className="day-title-group">
           <div className="day-city">{day.location || "Unknown stop"}</div>
-          {hasMeta && (
+          {hasDrive && (
             <div className="day-meta">
               {day.drive_miles > 0 && `${day.drive_miles} mi`}
               {day.drive_miles > 0 && day.drive_hours > 0 && " · "}
@@ -23,60 +77,65 @@ function DayCard({ day }) {
         <span className={`day-chevron ${open ? "open" : ""}`}>▾</span>
       </div>
 
-      {/* Expandable body */}
       {open && (
         <div className="day-body">
+
+          {/* Gas stop */}
           {day.gas_stop && (
-            <>
+            <div className="day-section">
               <div className="day-section-label">⛽ Gas Stop</div>
               <div className="tags">
                 <span className="tag gas">⛽ {day.gas_stop}</span>
               </div>
-            </>
+            </div>
           )}
 
+          {/* Lodging */}
           {day.lodging && (
-            <>
+            <div className="day-section">
               <div className="day-section-label">🏨 Where to Stay</div>
-              <div className="tags">
-                <span className="tag lodging">🏨 {day.lodging}</span>
-              </div>
-            </>
+              <PlaceCard place={day.lodging} accent="var(--accent)" />
+            </div>
           )}
 
+          {/* Activities */}
           {day.activities?.length > 0 && (
-            <>
-              <div className="day-section-label">📍 Activities</div>
-              <div className="tags">
+            <div className="day-section">
+              <div className="day-section-label">📍 Things to Do</div>
+              <div className="place-list">
                 {day.activities.map((a, i) => (
-                  <span key={i} className="tag activity">📍 {a}</span>
+                  <PlaceCard key={i} place={a} accent="var(--green)" />
                 ))}
               </div>
-            </>
+            </div>
           )}
 
+          {/* Restaurants */}
           {day.restaurants?.length > 0 && (
-            <>
-              <div className="day-section-label">🍽️ Food</div>
-              <div className="tags">
+            <div className="day-section">
+              <div className="day-section-label">🍽️ Where to Eat</div>
+              <div className="place-list">
                 {day.restaurants.map((r, i) => (
-                  <span key={i} className="tag restaurant">🍽️ {r}</span>
+                  <PlaceCard key={i} place={r} accent="var(--pink)" />
                 ))}
               </div>
-            </>
+            </div>
           )}
 
+          {/* Weather */}
           {day.weather_note && (
             <div className="weather-note">
               🌤️ <span>{day.weather_note}</span>
             </div>
           )}
+
         </div>
       )}
     </div>
   );
 }
 
+// ── Main plan card ───────────────────────────────────────────────────────────
 export default function TripPlanCard({ plan, onNewTrip }) {
   if (!plan) return null;
 
@@ -85,7 +144,7 @@ export default function TripPlanCard({ plan, onNewTrip }) {
   return (
     <div className="plan-container">
 
-      {/* ── Hero ── */}
+      {/* Hero */}
       <div className="plan-hero">
         <div className="plan-route">
           <span className="route-city">{plan.origin}</span>
@@ -97,15 +156,21 @@ export default function TripPlanCard({ plan, onNewTrip }) {
         )}
       </div>
 
-      {/* ── Stats ── */}
+      {/* Stats */}
       <div className="stats-grid">
         <div className="stat-card">
           <div className="stat-label">Total Distance</div>
-          <div className="stat-value">{plan.total_miles?.toLocaleString() || 0} <span style={{fontSize:"0.7rem",fontWeight:400,color:"var(--text-muted)"}}>mi</span></div>
+          <div className="stat-value">
+            {plan.total_miles?.toLocaleString() || 0}
+            <span style={{ fontSize: "0.7rem", fontWeight: 400, color: "var(--text-muted)" }}> mi</span>
+          </div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Drive Time</div>
-          <div className="stat-value">{plan.total_drive_hours || 0} <span style={{fontSize:"0.7rem",fontWeight:400,color:"var(--text-muted)"}}>hrs</span></div>
+          <div className="stat-value">
+            {plan.total_drive_hours || 0}
+            <span style={{ fontSize: "0.7rem", fontWeight: 400, color: "var(--text-muted)" }}> hrs</span>
+          </div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Est. Fuel Cost</div>
@@ -117,7 +182,7 @@ export default function TripPlanCard({ plan, onNewTrip }) {
         </div>
       </div>
 
-      {/* ── Gas summary ── */}
+      {/* Gas banner */}
       {plan.gas_summary?.stops_description && (
         <div className="gas-banner">
           <span className="gas-icon">⛽</span>
@@ -125,18 +190,16 @@ export default function TripPlanCard({ plan, onNewTrip }) {
         </div>
       )}
 
-      {/* ── Day-by-day ── */}
-      <div className="section-header">
-        <span>📅</span> Day-by-Day Itinerary
-      </div>
+      {/* Itinerary */}
+      <div className="section-header"><span>📅</span> Day-by-Day Itinerary</div>
       <div className="day-cards">
         {plan.days?.map(day => <DayCard key={day.day} day={day} />)}
       </div>
 
-      {/* ── Tips ── */}
+      {/* Tips */}
       {plan.tips?.length > 0 && (
         <>
-          <div className="section-header" style={{marginTop: 28}}>
+          <div className="section-header" style={{ marginTop: 28 }}>
             <span>💡</span> Road Trip Tips
           </div>
           <div className="tips-list">
@@ -150,17 +213,12 @@ export default function TripPlanCard({ plan, onNewTrip }) {
         </>
       )}
 
-      {/* ── Actions ── */}
+      {/* Actions */}
       <div className="plan-actions">
-        <a
-          href={mapsUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="maps-btn"
-        >
-          🗺️ Open in Google Maps
+        <a href={mapsUrl} target="_blank" rel="noopener noreferrer" className="maps-btn">
+          🗺️ Open Route in Google Maps
         </a>
-        <button className="btn-ghost" onClick={onNewTrip} style={{padding: "10px 18px"}}>
+        <button className="btn-ghost" onClick={onNewTrip} style={{ padding: "10px 18px" }}>
           + Plan Another Trip
         </button>
       </div>
