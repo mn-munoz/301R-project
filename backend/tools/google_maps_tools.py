@@ -11,6 +11,7 @@ CLASS CONCEPTS: Tool Calling (code-as-tool) + Hallucination Control
   - All place recommendations come from search_places() results only.
 """
 
+import re
 import httpx
 from config import GOOGLE_API_KEY
 
@@ -44,21 +45,126 @@ async def _geocode(client: httpx.AsyncClient, address: str) -> dict | None:
     return None
 
 
+def _extract_city_state(components: list) -> str:
+    """Pull a clean 'City, ST' string out of Geocoding API address_components."""
+    name = state = ""
+    for comp in components:
+        types = comp.get("types", [])
+        # Accept the most specific place name available
+        if not name and any(t in types for t in (
+            "locality", "administrative_area_level_3", "administrative_area_level_2"
+        )):
+            name = comp["short_name"]
+        if not state and "administrative_area_level_1" in types:
+            state = comp["short_name"]
+    if name and state:
+        return f"{name}, {state}"
+    return name  # may be empty string
+
+
 async def _reverse_geocode(client: httpx.AsyncClient, lat: float, lng: float) -> str:
-    """Convert lat/lng to a human-readable city name."""
+    """
+    Convert lat/lng to a human-readable 'City, ST' string.
+
+    Never returns raw coordinates — always finds a named place.
+    Strategy:
+      1. Try Geocoding API with locality (proper city)
+      2. Try Geocoding API with county/level-2 (rural areas)
+      3. Try unrestricted reverse geocode and scan all components
+      4. Use Places text search to find nearest city (handles ocean coordinates)
+      5. Last resort: 'Intermediate Stop'
+    """
+    # ── Steps 1 & 2: filtered result_type lookups ───────────────────────────
+    for result_type in ("locality", "administrative_area_level_2"):
+        resp = await client.get(
+            GEOCODE_BASE,
+            params={"latlng": f"{lat},{lng}", "result_type": result_type,
+                    "key": GOOGLE_API_KEY},
+            timeout=10,
+        )
+        results = resp.json().get("results", [])
+        if not results:
+            continue
+        city_state = _extract_city_state(results[0].get("address_components", []))
+        if city_state:
+            return city_state
+
+    # ── Step 3: unrestricted reverse geocode — scan multiple results ─────────
     resp = await client.get(
         GEOCODE_BASE,
-        params={
-            "latlng": f"{lat},{lng}",
-            "result_type": "locality",
-            "key": GOOGLE_API_KEY,
-        },
+        params={"latlng": f"{lat},{lng}", "key": GOOGLE_API_KEY},
         timeout=10,
     )
-    data = resp.json()
-    if data.get("results"):
-        return data["results"][0].get("formatted_address", f"{lat:.3f},{lng:.3f}")
-    return f"{lat:.3f},{lng:.3f}"
+    for result in resp.json().get("results", [])[:5]:
+        city_state = _extract_city_state(result.get("address_components", []))
+        if city_state:
+            return city_state
+
+    # ── Step 4: Places text search — nearest city within 500 km ─────────────
+    # This handles coordinates over water (Gulf of Mexico, etc.) where the
+    # Geocoding API returns nothing.
+    try:
+        nearby = await client.post(
+            PLACES_TEXT_BASE,
+            json={
+                "textQuery":      "city",
+                "maxResultCount": 1,
+                "locationBias": {
+                    "circle": {
+                        "center": {"latitude": lat, "longitude": lng},
+                        "radius": 500_000,   # 500 km — wide enough to reach land from the Gulf
+                    }
+                },
+            },
+            headers={
+                "Content-Type":    "application/json",
+                "X-Goog-Api-Key":  GOOGLE_API_KEY,
+                "X-Goog-FieldMask": "places.displayName,places.addressComponents",
+            },
+            timeout=10,
+        )
+        places = nearby.json().get("places", [])
+        if places:
+            # addressComponents uses camelCase keys in Places API (New)
+            comps = [
+                {"short_name": c.get("shortText", ""), "types": c.get("types", [])}
+                for c in places[0].get("addressComponents", [])
+            ]
+            city_state = _extract_city_state(comps)
+            if city_state:
+                print(f"[_reverse_geocode] Ocean fallback: ({lat:.3f},{lng:.3f}) → {city_state}")
+                return city_state
+            display = places[0].get("displayName", {}).get("text", "")
+            if display:
+                return display
+    except Exception as exc:
+        print(f"[_reverse_geocode] Places fallback failed: {exc}")
+
+    # ── Step 5: absolute last resort ─────────────────────────────────────────
+    print(f"[_reverse_geocode] All lookups failed for ({lat:.3f},{lng:.3f}), using generic name")
+    return "Intermediate Stop"
+
+
+_COORD_RE = re.compile(r"^(-?\d+\.?\d*),\s*(-?\d+\.?\d*)$")
+
+
+def _build_waypoint(location: str) -> dict:
+    """
+    Build a Routes API waypoint from either an address string or a 'lat,lng' string.
+    The Routes API rejects raw 'lat,lng' strings in the `address` field — they must
+    be passed as location.latLng objects instead.
+    """
+    m = _COORD_RE.match(location.strip())
+    if m:
+        return {
+            "location": {
+                "latLng": {
+                    "latitude":  float(m.group(1)),
+                    "longitude": float(m.group(2)),
+                }
+            }
+        }
+    return {"address": location}
 
 
 # ── Public tools ─────────────────────────────────────────────────────────────
@@ -77,21 +183,23 @@ async def get_route(origin: str, destination: str) -> dict:
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": GOOGLE_API_KEY,
-        "X-Goog-FieldMask": (
-            "routes.duration,routes.distanceMeters,"
-            "routes.legs,routes.description"
-        ),
+        "X-Goog-FieldMask": "routes.duration,routes.distanceMeters",
     }
     body = {
-        "origin":      {"address": origin},
-        "destination": {"address": destination},
+        "origin":      _build_waypoint(origin),
+        "destination": _build_waypoint(destination),
         "travelMode":  "DRIVE",
     }
 
     async with httpx.AsyncClient() as client:
         try:
+            print(f"[get_route] Sending request: origin={origin!r}, destination={destination!r}")
+            print(f"[get_route] API key present: {bool(GOOGLE_API_KEY)}, key prefix: {GOOGLE_API_KEY[:8] if GOOGLE_API_KEY else 'MISSING'}")
             resp = await client.post(ROUTES_BASE, json=body, headers=headers, timeout=15)
-            resp.raise_for_status()
+            if not resp.is_success:
+                error_body = resp.text
+                print(f"[get_route] Routes API {resp.status_code} error body: {error_body}")
+                return {"error": f"Routes API {resp.status_code}: {error_body}"}
             data = resp.json()
 
             if not data.get("routes"):
@@ -105,11 +213,10 @@ async def get_route(origin: str, destination: str) -> dict:
             total_hours   = round(total_seconds / 3600, 2)
 
             return {
-                "origin":       origin,
-                "destination":  destination,
-                "total_miles":  total_miles,
-                "total_hours":  total_hours,
-                "summary":      route.get("description", ""),
+                "origin":      origin,
+                "destination": destination,
+                "total_miles": total_miles,
+                "total_hours": total_hours,
             }
 
         except Exception as e:
@@ -143,11 +250,15 @@ async def get_midpoint_cities(origin: str, destination: str, num_stops: int = 1)
                 "X-Goog-FieldMask": "routes.duration,routes.distanceMeters",
             }
             body = {
-                "origin":      {"address": origin},
-                "destination": {"address": destination},
+                "origin":      _build_waypoint(origin),
+                "destination": _build_waypoint(destination),
                 "travelMode":  "DRIVE",
             }
             route_resp = await client.post(ROUTES_BASE, json=body, headers=headers, timeout=15)
+            if not route_resp.is_success:
+                error_body = route_resp.text
+                print(f"[get_midpoint_cities] Routes API {route_resp.status_code} error body: {error_body}")
+                return {"error": f"Routes API {route_resp.status_code}: {error_body}"}
             route_data = route_resp.json()
             total_miles = 0.0
             total_hours = 0.0
@@ -195,7 +306,7 @@ async def search_places(query: str, location: str) -> dict:
                  "best hiking trails near Sedona AZ"
                  "highly rated Mexican restaurant in Albuquerque NM"
                  "things to do in Santa Fe NM"
-        location: City used to bias results geographically (e.g. "Flagstaff, AZ").
+        location: City used to restrict results geographically (e.g. "Flagstaff, AZ").
 
     Returns:
         Dict with up to 5 matching places, each with name, rating, address,
@@ -203,8 +314,13 @@ async def search_places(query: str, location: str) -> dict:
     """
     async with httpx.AsyncClient() as client:
         try:
-            # Geocode the city for location bias
+            # Geocode the city to enforce a hard geographic boundary.
+            # If geocoding fails, we fall back to a locationBias (soft hint) so
+            # we still get some results — better than returning an error which
+            # causes the LLM to hallucinate place descriptions.
             loc = await _geocode(client, location)
+            if not loc:
+                print(f"[search_places] Geocoding failed for: {location!r} — falling back to text-only search")
 
             headers = {
                 "Content-Type": "application/json",
@@ -219,32 +335,49 @@ async def search_places(query: str, location: str) -> dict:
                 ),
             }
 
-            body: dict = {
-                "textQuery":      query,
-                "maxResultCount": 5,
-                "languageCode":   "en",
-            }
+            # Build the search radius list.
+            # If geocoding succeeded: try 50 km (tight), then 100 km (wide) with a hard boundary.
+            # If geocoding failed: make one unrestricted text search — the city name in the
+            # query still provides location context, and it's better than returning no results.
+            raw_places: list = []
+            radius_list = [50_000, 100_000] if loc else [None]
 
-            # If we have coordinates, add a location bias so results are near the city
-            if loc:
-                body["locationBias"] = {
-                    "circle": {
-                        "center": {"latitude": loc["lat"], "longitude": loc["lng"]},
-                        "radius": 30000,   # 30 km bias radius
-                    }
+            for radius_m in radius_list:
+                body: dict = {
+                    "textQuery":      query,
+                    "maxResultCount": 5,
+                    "languageCode":   "en",
                 }
+                if loc and radius_m:
+                    # Hard geographic boundary — never returns results outside this circle.
+                    body["locationRestriction"] = {
+                        "circle": {
+                            "center": {
+                                "latitude":  loc["lat"],
+                                "longitude": loc["lng"],
+                            },
+                            "radius": radius_m,
+                        }
+                    }
 
-            resp = await client.post(
-                PLACES_TEXT_BASE, json=body, headers=headers, timeout=15
-            )
-            resp.raise_for_status()
-            data = resp.json()
+                resp = await client.post(
+                    PLACES_TEXT_BASE, json=body, headers=headers, timeout=15
+                )
+                if not resp.is_success:
+                    print(f"[search_places] Places API {resp.status_code}: {resp.text}")
+                    return {"results": [], "count": 0, "location": location, "query": query}
+                data = resp.json()
 
-            if "error" in data:
-                return {"error": data["error"].get("message", "Places API error"), "results": []}
+                if "error" in data:
+                    print(f"[search_places] Places API error: {data['error']}")
+                    return {"results": [], "count": 0, "location": location, "query": query}
+
+                raw_places = data.get("places", [])
+                if raw_places:
+                    break   # found results at this radius — no need to widen further
 
             results = []
-            for place in data.get("places", []):
+            for place in raw_places:
                 price_raw = place.get("priceLevel", "")
                 results.append({
                     "name":        place.get("displayName", {}).get("text", "Unknown"),

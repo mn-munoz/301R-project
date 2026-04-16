@@ -29,8 +29,8 @@ def build_trip_plan(orchestrator_text: str, trip_brief: TripBrief) -> TripPlan:
             lodging=_parse_place(day_data.get("lodging")),
             activities=[p for p in (_parse_place(a) for a in (day_data.get("activities") or [])) if p],
             restaurants=[p for p in (_parse_place(r) for r in (day_data.get("restaurants") or [])) if p],
-            gas_stop=day_data.get("gas_stop"),
-            weather_note=day_data.get("weather_note"),
+            gas_stop=_coerce_str(day_data.get("gas_stop")),
+            weather_note=_coerce_str(day_data.get("weather_note")),
         ))
 
     gas_raw = data.get("gas_summary") or {}
@@ -76,6 +76,26 @@ def _parse_place(raw) -> Place | None:
             ),
         )
     return None
+
+
+def _coerce_str(value) -> str | None:
+    """
+    Safely convert a field that should be a plain string (like gas_stop or weather_note)
+    into an actual str, even if the LLM returned a dict or other object.
+    Returns None if the value is falsy.
+    """
+    if not value:
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        # Pull the most descriptive text field available
+        for key in ("city", "name", "description", "text", "note", "location"):
+            if value.get(key):
+                return str(value[key])
+        # Last resort: stringify the whole dict compactly
+        return ", ".join(str(v) for v in value.values() if v) or None
+    return str(value) or None
 
 
 def _extract_json(text: str) -> dict:
